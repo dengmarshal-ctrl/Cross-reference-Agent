@@ -457,12 +457,8 @@ def _detect_references(
         for paragraph_id in (caption.paragraph_id, caption.duplicate_paragraph_id)
         if paragraph_id
     }
-    by_old_number = {
-        caption.original_number: caption
-        for caption in captions
-        if caption.original_number is not None
-    }
-    by_new_number = {caption.new_number: caption for caption in captions}
+    by_old_number = _index_captions_by_number(captions, use_new_number=False)
+    by_new_number = _index_captions_by_number(captions, use_new_number=True)
     table_positions = {caption.id: caption.body_index for caption in captions}
     references: list[dict[str, Any]] = []
     ref_index = 0
@@ -553,24 +549,68 @@ def _match_reference_target(
     *,
     number: str,
     paragraph_body_index: int,
-    old_number_index: dict[str, CaptionCandidate],
-    new_number_index: dict[str, CaptionCandidate],
+    old_number_index: dict[str, list[CaptionCandidate]],
+    new_number_index: dict[str, list[CaptionCandidate]],
     captions: list[CaptionCandidate],
     table_positions: dict[str, int],
 ) -> tuple[CaptionCandidate | None, str, str]:
-    old_number_target = old_number_index.get(number)
-    if old_number_target:
-        return old_number_target, "high", "原始统计表编号唯一匹配到表格题注"
+    old_number_targets = old_number_index.get(number, [])
+    if old_number_targets:
+        target = _best_context_candidate(paragraph_body_index, old_number_targets, table_positions)
+        if target:
+            if len(old_number_targets) == 1:
+                return target, "high", "原始统计表编号唯一匹配到表格题注"
+            return target, "high", "存在重复局部编号，按同章节/段落后的最近同编号表格匹配"
 
-    new_number_target = new_number_index.get(number)
-    if new_number_target:
-        return new_number_target, "high", "正文编号匹配题注重排后的新编号"
+    # Treat generated caption numbers as global only when no source caption uses
+    # the same local number. Otherwise `见表1` in every section would incorrectly
+    # bind to the first global caption.
+    if number not in old_number_index:
+        new_number_targets = new_number_index.get(number, [])
+        target = _best_context_candidate(paragraph_body_index, new_number_targets, table_positions)
+        if target:
+            return target, "high", "正文编号匹配题注重排后的新编号"
 
     nearest_caption = _nearest_caption_after(paragraph_body_index, captions, table_positions)
     if nearest_caption:
         return nearest_caption, "medium", "未命中编号，按同章节/段落后的最近表格推荐匹配"
 
     return None, "low", "未找到具有相同编号或邻近位置的表格题注"
+
+
+def _index_captions_by_number(
+    captions: list[CaptionCandidate], *, use_new_number: bool
+) -> dict[str, list[CaptionCandidate]]:
+    index: dict[str, list[CaptionCandidate]] = {}
+    for caption in captions:
+        number = caption.new_number if use_new_number else caption.original_number
+        if not number:
+            continue
+        index.setdefault(number, []).append(caption)
+    return index
+
+
+def _best_context_candidate(
+    paragraph_body_index: int,
+    candidates: list[CaptionCandidate],
+    table_positions: dict[str, int],
+) -> CaptionCandidate | None:
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    after_candidates = [
+        caption
+        for caption in candidates
+        if table_positions.get(caption.id, -1) > paragraph_body_index
+    ]
+    if after_candidates:
+        after_candidates.sort(key=lambda caption: table_positions.get(caption.id, 10**9))
+        return after_candidates[0]
+
+    candidates.sort(key=lambda caption: abs(table_positions.get(caption.id, 10**9) - paragraph_body_index))
+    return candidates[0]
 
 
 def _nearest_caption_after(

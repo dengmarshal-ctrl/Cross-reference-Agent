@@ -83,6 +83,46 @@ class OoxmlProcessorTest(unittest.TestCase):
         self.assertEqual(plan["reference_actions"][0]["proposed_text"], "统计列表 1")
         self.assertIn("最近表格", plan["reference_actions"][0]["reason"])
 
+    def test_repeated_local_table_one_references_stay_in_context(self) -> None:
+        sample = self._docx(
+            """
+    <w:p><w:r><w:t>1.1 研究人群</w:t></w:r></w:p>
+    <w:p><w:r><w:t>按中心划分的入组受试者总数见表14.1.1.1。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表 14.1.1.1 研究人群</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>筛选例数</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>1.2 方案偏离</w:t></w:r></w:p>
+    <w:p><w:r><w:t>研究期间，两组发生率相近（见表1）。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表1 重要方案偏离情况 － 意向治疗分析集(ITT)</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>重要方案偏离</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>1.3 分析集</w:t></w:r></w:p>
+    <w:p><w:r><w:t>各分析集的受试者分布情况见表1。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表1 分析数据集分布</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>分析数据集</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+            """
+        )
+
+        plan = analyze_docx(sample)
+        output, audit = process_docx(sample)
+        document_xml = self._document_xml(output)
+
+        self.assertEqual(
+            [reference["proposed_text"] for reference in plan["reference_actions"]],
+            ["表1", "表2", "表3"],
+        )
+        self.assertEqual(plan["reference_actions"][1]["target_title"], "重要方案偏离情况 － 意向治疗分析集(ITT)")
+        self.assertEqual(plan["reference_actions"][2]["target_title"], "分析数据集分布")
+        self.assertIn("重复局部编号", plan["reference_actions"][1]["reason"])
+        self.assertEqual(audit["summary"]["cross_references_created"], 3)
+        self.assertIn('w:instr=" REF _CSR_Table_002 \\h "', document_xml)
+        self.assertIn('w:instr=" REF _CSR_Table_003 \\h "', document_xml)
+        self.assertNotIn(">4<", document_xml)
+
     def _document_xml(self, docx_bytes: bytes) -> str:
         with zipfile.ZipFile(io.BytesIO(docx_bytes), "r") as docx:
             return docx.read("word/document.xml").decode("utf-8")
