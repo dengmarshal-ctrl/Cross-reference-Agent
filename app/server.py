@@ -12,7 +12,7 @@ from app.ooxml_processor import analyze_docx, audit_to_json, create_sample_docx,
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 
 
