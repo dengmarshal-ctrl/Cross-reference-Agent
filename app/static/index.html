@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSR 文档题注与交叉引用治理 Agent Demo</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="back" href="#">← Agent 市场</a>
+      <strong>CSR 文档题注与交叉引用治理</strong>
+      <span class="pill">OOXML Demo v0.2</span>
+    </header>
+
+    <main class="layout">
+      <aside class="card task-card">
+        <p class="eyebrow">当前任务</p>
+        <h1>AI 写作下游合规后处理</h1>
+        <p class="muted">
+          识别正文引用与表格/图片题注，执行题注创建、编号映射和交叉引用字段写入。
+        </p>
+
+        <label class="upload-box" for="fileInput">
+          <span>选择 .docx 文档</span>
+          <small id="fileName">尚未选择文件</small>
+        </label>
+        <input id="fileInput" type="file" accept=".docx" hidden />
+
+        <div class="strategy-section">
+          <p class="eyebrow">编号策略</p>
+          <label class="radio-option">
+            <input type="radio" name="strategy" value="continuous" checked />
+            <span>全文连续编号</span>
+            <small>表 1、表 2、图 1、图 2</small>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="strategy" value="chapter" />
+            <span>按章节编号</span>
+            <small>表 10-1、表 10-2</small>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="strategy" value="preserve" />
+            <span>保留原始编号</span>
+            <small>沿用文档中的编号</small>
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="sampleBtn" class="secondary">下载示例文档</button>
+          <button id="analyzeBtn">扫描文档</button>
+        </div>
+        <button id="processBtn" class="full" disabled>执行治理并生成 DOCX</button>
+
+        <div class="strategy">
+          <p class="eyebrow">MVP 能力范围</p>
+          <div>对象范围：表格 + 图片</div>
+          <div>高置信度：自动处理</div>
+          <div>中置信度：确认队列</div>
+          <div>低置信度：仅报告</div>
+        </div>
+      </aside>
+
+      <section class="card preview-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">文档预览</p>
+            <h2 id="docTitle">等待上传文档</h2>
+          </div>
+          <span id="summaryBadge" class="badge">未扫描</span>
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <div class="loader"></div>
+          <h3>上传或下载示例文档后开始扫描</h3>
+          <p>Demo 会展示识别到的表格/图片题注、正文引用、编号映射和执行计划。</p>
+        </div>
+
+        <div id="planView" class="plan-view hidden">
+          <div class="metrics">
+            <div>
+              <strong id="metricTables">0</strong>
+              <span>表格</span>
+            </div>
+            <div>
+              <strong id="metricImages">0</strong>
+              <span>图片</span>
+            </div>
+            <div>
+              <strong id="metricRefs">0</strong>
+              <span>正文引用</span>
+            </div>
+            <div>
+              <strong id="metricHigh">0</strong>
+              <span>高置信度</span>
+            </div>
+            <div>
+              <strong id="metricMedium">0</strong>
+              <span>待确认</span>
+            </div>
+            <div>
+              <strong id="metricLow">0</strong>
+              <span>异常</span>
+            </div>
+          </div>
+
+          <h3>题注治理计划</h3>
+          <div id="captionList" class="list"></div>
+
+          <h3>引用匹配计划</h3>
+          <div id="referenceList" class="list"></div>
+
+          <div id="confirmSection" class="confirm-section hidden">
+            <h3>人工确认队列</h3>
+            <p class="muted">以下引用为中置信度，请逐项确认或跳过。确认后的项目将在执行时自动处理。</p>
+            <div id="confirmList" class="list"></div>
+            <div class="confirm-actions">
+              <span id="confirmCount">已确认 0 项</span>
+              <button id="confirmAllBtn" class="secondary">全部接受</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="card log-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">执行与日志区</p>
+            <h2>透明执行</h2>
+          </div>
+          <button id="clearBtn" class="ghost">清空</button>
+        </div>
+
+        <div id="logList" class="log-list"></div>
+
+        <div id="downloadPanel" class="download-panel hidden">
+          <p class="eyebrow">结果下载</p>
+          <p id="resultSummary"></p>
+          <div class="button-row">
+            <button id="downloadDocBtn">下载治理后文档</button>
+            <button id="downloadAuditBtn" class="secondary">下载审计报告</button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>
