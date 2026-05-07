@@ -468,15 +468,17 @@ def _detect_references(
         for match in REFERENCE_RE.finditer(record["text"]):
             ref_index += 1
             number = match.group("number")
-            target, confidence, reason = _match_reference_target(
+            prefix = f"{match.group('prefix')}{match.group('space')}"
+            target, confidence, reason, match_method = _match_reference_target(
                 number=number,
+                prefix_label=match.group("prefix"),
                 paragraph_body_index=record["body_index"],
+                context_text=record["text"],
                 old_number_index=by_old_number,
                 new_number_index=by_new_number,
                 captions=captions,
                 table_positions=table_positions,
             )
-            prefix = f"{match.group('prefix')}{match.group('space')}"
             references.append(
                 {
                     "id": f"ref_{ref_index:03d}",
@@ -490,6 +492,7 @@ def _detect_references(
                     "new_number": target.new_number if target else None,
                     "proposed_text": f"{prefix}{target.new_number}" if target else None,
                     "confidence": confidence,
+                    "match_method": match_method,
                     "reason": reason,
                 }
             )
@@ -548,24 +551,46 @@ def _caption_action_name(caption: CaptionCandidate) -> str:
 def _match_reference_target(
     *,
     number: str,
+    prefix_label: str,
     paragraph_body_index: int,
+    context_text: str,
     old_number_index: dict[str, list[CaptionCandidate]],
     new_number_index: dict[str, list[CaptionCandidate]],
     captions: list[CaptionCandidate],
     table_positions: dict[str, int],
-) -> tuple[CaptionCandidate | None, str, str]:
+) -> tuple[CaptionCandidate | None, str, str, str]:
+    if prefix_label in {"表", "表格"}:
+        semantic_target, semantic_reason = _semantic_nearby_candidate(
+            context_text=context_text,
+            paragraph_body_index=paragraph_body_index,
+            captions=captions,
+            table_positions=table_positions,
+        )
+        if semantic_target:
+            return semantic_target, "high", semantic_reason, "semantic_nearby_context"
+
     if _is_simple_number(number):
         nearest_caption = _nearest_caption_after(paragraph_body_index, captions, table_positions)
         if nearest_caption and _caption_matches_short_number(nearest_caption, number):
-            return nearest_caption, "high", "短编号引用按当前段落后的最近相关表格匹配"
+            return (
+                nearest_caption,
+                "high",
+                "短编号引用按当前段落后的最近相关表格匹配",
+                "short_number_nearby_caption",
+            )
 
     old_number_targets = old_number_index.get(number, [])
     if old_number_targets:
         target = _best_context_candidate(paragraph_body_index, old_number_targets, table_positions)
         if target:
             if len(old_number_targets) == 1:
-                return target, "high", "原始统计表编号唯一匹配到表格题注"
-            return target, "high", "存在重复局部编号，按同章节/段落后的最近同编号表格匹配"
+                return target, "high", "原始统计表编号唯一匹配到表格题注", "source_number_exact"
+            return (
+                target,
+                "high",
+                "存在重复局部编号，按同章节/段落后的最近同编号表格匹配",
+                "duplicate_source_number_nearby",
+            )
 
     # Treat generated caption numbers as global only when no source caption uses
     # the same local number. Otherwise `见表1` in every section would incorrectly
@@ -574,13 +599,18 @@ def _match_reference_target(
         new_number_targets = new_number_index.get(number, [])
         target = _best_context_candidate(paragraph_body_index, new_number_targets, table_positions)
         if target:
-            return target, "high", "正文编号匹配题注重排后的新编号"
+            return target, "high", "正文编号匹配题注重排后的新编号", "generated_number_exact"
 
     nearest_caption = _nearest_caption_after(paragraph_body_index, captions, table_positions)
     if nearest_caption:
-        return nearest_caption, "medium", "未命中编号，按同章节/段落后的最近表格推荐匹配"
+        return (
+            nearest_caption,
+            "medium",
+            "未命中编号，按同章节/段落后的最近表格推荐匹配",
+            "nearby_fallback",
+        )
 
-    return None, "low", "未找到具有相同编号或邻近位置的表格题注"
+    return None, "low", "未找到具有相同编号或邻近位置的表格题注", "unmatched"
 
 
 def _is_simple_number(number: str) -> bool:
@@ -594,6 +624,93 @@ def _caption_matches_short_number(caption: CaptionCandidate, number: str) -> boo
         return False
     parts = re.split(r"[.\-]", caption.original_number)
     return bool(parts and parts[-1] == number)
+
+
+def _semantic_nearby_candidate(
+    *,
+    context_text: str,
+    paragraph_body_index: int,
+    captions: list[CaptionCandidate],
+    table_positions: dict[str, int],
+) -> tuple[CaptionCandidate | None, str]:
+    candidates: list[tuple[float, int, list[str], CaptionCandidate]] = []
+    normalized_context = _normalize_for_semantic_match(context_text)
+    for caption in captions:
+        position = table_positions.get(caption.id, -1)
+        if position <= paragraph_body_index:
+            continue
+        distance = position - paragraph_body_index
+        if distance > 12:
+            continue
+        score, matched_terms = _caption_context_score(normalized_context, caption.title)
+        if score <= 0:
+            continue
+        candidates.append((score, distance, matched_terms, caption))
+
+    if not candidates:
+        return None, ""
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    best_score, best_distance, matched_terms, best_caption = candidates[0]
+    if best_score < 0.28:
+        return None, ""
+    return (
+        best_caption,
+        "正文整句与附近表题语义匹配，关键词："
+        + "、".join(matched_terms[:5])
+        + f"；段落距离：{best_distance}",
+    )
+
+
+def _caption_context_score(normalized_context: str, caption_title: str) -> tuple[float, list[str]]:
+    terms = _semantic_terms(caption_title)
+    if not terms:
+        return 0.0, []
+    matched_terms: list[str] = []
+    matched_weight = 0
+    for term in terms:
+        if term in normalized_context and not any(term in existing for existing in matched_terms):
+            matched_terms.append(term)
+            matched_weight += len(term)
+    denominator = max(10, min(28, len(_normalize_for_semantic_match(caption_title))))
+    return matched_weight / denominator, matched_terms
+
+
+def _semantic_terms(text: str) -> list[str]:
+    normalized = _normalize_for_semantic_match(text)
+    stop_terms = {
+        "意向治疗分析集",
+        "治疗分析集",
+        "分析集",
+        "情况",
+        "总结",
+        "统计",
+        "列表",
+        "表格",
+        "研究",
+        "患者",
+        "受试者",
+        "ITT",
+    }
+    terms: set[str] = set()
+    for chunk in re.findall(r"[\u4e00-\u9fffA-Za-z]+", normalized):
+        if chunk in stop_terms:
+            continue
+        if re.fullmatch(r"[A-Za-z]+", chunk):
+            if len(chunk) >= 3 and chunk.upper() not in stop_terms:
+                terms.add(chunk.upper())
+            continue
+        max_len = min(8, len(chunk))
+        for length in range(max_len, 1, -1):
+            for start in range(0, len(chunk) - length + 1):
+                term = chunk[start : start + length]
+                if term not in stop_terms and not any(term in stop for stop in stop_terms):
+                    terms.add(term)
+    return sorted(terms, key=lambda value: (-len(value), value))
+
+
+def _normalize_for_semantic_match(text: str) -> str:
+    return re.sub(r"[\s　,，.。;；:：()（）\\－—_、/\-]+", "", text).upper()
 
 
 def _index_captions_by_number(

@@ -149,12 +149,25 @@ function renderPlan(plan) {
     els.referenceList.appendChild(
       item(
         `${ref.raw_text} → ${ref.proposed_text || "未匹配"}`,
-        `段落：${ref.paragraph_id}；目标：${ref.target_title || "无"}；原因：${ref.reason}`,
+        `段落：${ref.paragraph_id}；目标：${ref.target_title || "无"}；匹配方法：${formatMatchMethod(ref.match_method)}；原因：${ref.reason}`,
         ref.confidence,
         confidenceClass
       )
     );
   }
+}
+
+function formatMatchMethod(method) {
+  const labels = {
+    semantic_nearby_context: "正文整句语义 + 附近表题",
+    short_number_nearby_caption: "短编号 + 段落邻近",
+    source_number_exact: "原始编号精确匹配",
+    duplicate_source_number_nearby: "重复局部编号 + 附近同编号表",
+    generated_number_exact: "重排后新编号精确匹配",
+    nearby_fallback: "段落邻近兜底推荐",
+    unmatched: "未匹配",
+  };
+  return labels[method] || method || "未记录";
 }
 
 function renderExecution(audit) {

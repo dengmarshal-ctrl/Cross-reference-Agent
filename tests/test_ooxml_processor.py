@@ -57,7 +57,8 @@ class OoxmlProcessorTest(unittest.TestCase):
 
         self.assertEqual(plan["caption_actions"][0]["source_kind"], "table_first_row")
         self.assertEqual(plan["reference_actions"][0]["confidence"], "high")
-        self.assertIn("短编号引用", plan["reference_actions"][0]["reason"])
+        self.assertEqual(plan["reference_actions"][0]["match_method"], "semantic_nearby_context")
+        self.assertIn("语义匹配", plan["reference_actions"][0]["reason"])
         self.assertIn('w:instr=" SEQ 表 \\* ARABIC "', document_xml)
         self.assertIn('w:instr=" REF _CSR_Table_001 \\h "', document_xml)
         self.assertNotIn("表 14.1.1.3 重要方案偏离情况", document_xml)
@@ -146,9 +147,41 @@ class OoxmlProcessorTest(unittest.TestCase):
 
         self.assertEqual(plan["reference_actions"][0]["target_title"], "人口学和基线特征总结 意向治疗分析集(ITT)")
         self.assertEqual(plan["reference_actions"][0]["proposed_text"], "表2")
-        self.assertIn("短编号引用", plan["reference_actions"][0]["reason"])
+        self.assertEqual(plan["reference_actions"][0]["match_method"], "semantic_nearby_context")
+        self.assertIn("语义匹配", plan["reference_actions"][0]["reason"])
         self.assertEqual(audit["summary"]["cross_references_created"], 1)
         self.assertIn('w:instr=" REF _CSR_Table_002 \\h "', document_xml)
+        self.assertNotIn('w:instr=" REF _CSR_Table_001 \\h "', document_xml)
+
+    def test_semantic_context_can_override_wrong_global_number(self) -> None:
+        sample = self._docx(
+            """
+    <w:p><w:r><w:t>表4 其他章节无关表格</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>其他内容</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>表2 研究药物偏离情况</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>研究药物偏离</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>研究期间，在意向治疗分析集（ITT）中，共107例患者发生了重要方案偏离，两组发生率相近（见表4）。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表1 重要方案偏离情况 － 意向治疗分析集(ITT)</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>重要方案偏离</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+            """
+        )
+
+        plan = analyze_docx(sample)
+        output, audit = process_docx(sample)
+        document_xml = self._document_xml(output)
+
+        self.assertEqual(plan["reference_actions"][0]["target_title"], "重要方案偏离情况 － 意向治疗分析集(ITT)")
+        self.assertEqual(plan["reference_actions"][0]["proposed_text"], "表3")
+        self.assertEqual(plan["reference_actions"][0]["match_method"], "semantic_nearby_context")
+        self.assertIn("重要方案偏离", plan["reference_actions"][0]["reason"])
+        self.assertEqual(audit["summary"]["cross_references_created"], 1)
+        self.assertIn('w:instr=" REF _CSR_Table_003 \\h "', document_xml)
         self.assertNotIn('w:instr=" REF _CSR_Table_001 \\h "', document_xml)
 
     def _document_xml(self, docx_bytes: bytes) -> str:
