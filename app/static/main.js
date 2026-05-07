@@ -125,7 +125,8 @@ function renderPlan(plan) {
   els.metricTables.textContent = summary.tables;
   els.metricRefs.textContent = summary.table_references;
   els.metricHigh.textContent = summary.high_confidence_references;
-  els.metricLow.textContent = summary.low_confidence_references;
+  els.metricLow.textContent =
+    (summary.medium_confidence_references || 0) + summary.low_confidence_references;
 
   els.captionList.innerHTML = "";
   for (const action of plan.caption_actions) {
@@ -139,7 +140,12 @@ function renderPlan(plan) {
 
   els.referenceList.innerHTML = "";
   for (const ref of plan.reference_actions) {
-    const confidenceClass = ref.confidence === "high" ? "confidence-high" : "confidence-low";
+    const confidenceClass =
+      ref.confidence === "high"
+        ? "confidence-high"
+        : ref.confidence === "medium"
+          ? "confidence-medium"
+          : "confidence-low";
     els.referenceList.appendChild(
       item(
         `${ref.raw_text} → ${ref.proposed_text || "未匹配"}`,

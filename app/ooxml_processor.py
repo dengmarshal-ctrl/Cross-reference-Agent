@@ -25,7 +25,9 @@ W = f"{{{WORD_NS}}}"
 CAPTION_RE = re.compile(
     r"^\s*(?P<label>表格|表)\s*(?P<number>\d+(?:[.\-]\d+)*)\s*(?P<title>.+?)\s*$"
 )
-REFERENCE_RE = re.compile(r"(?P<prefix>表格|表)(?P<space>\s*)(?P<number>\d+(?:[.\-]\d+)*)")
+REFERENCE_RE = re.compile(
+    r"(?P<prefix>统计列表|列表|表格|表)(?P<space>\s*)(?P<number>\d+(?:[.\-]\d+)*)"
+)
 
 
 @dataclass
@@ -33,6 +35,8 @@ class CaptionCandidate:
     id: str
     table_id: str
     paragraph_id: str | None
+    duplicate_paragraph_id: str | None
+    source_kind: str
     body_index: int
     table_index: int
     original_text: str | None
@@ -87,15 +91,23 @@ def process_docx(docx_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
     ]
 
     max_bookmark_id = _max_bookmark_id(root)
-    caption_paragraph_ids = {caption.paragraph_id for caption in captions if caption.paragraph_id}
+    caption_paragraph_ids = {
+        paragraph_id
+        for caption in captions
+        for paragraph_id in (caption.paragraph_id, caption.duplicate_paragraph_id)
+        if paragraph_id
+    }
 
-    # Insert new caption paragraphs before tables that do not have a static caption.
+    # Insert new caption paragraphs only for tables without any detected title.
+    # Existing titles are overwritten in-place, including title rows inside tables.
     created_paragraphs: dict[str, ET.Element] = {}
+    insert_offset = 0
     for caption in captions:
-        if caption.paragraph_id:
+        if caption.source_kind != "missing":
             continue
         paragraph = _new_paragraph()
-        body.insert(caption.body_index, paragraph)
+        body.insert(caption.body_index + insert_offset, paragraph)
+        insert_offset += 1
         created_paragraphs[caption.id] = paragraph
 
     # Re-collect blocks because inserting paragraphs changes body order.
@@ -104,6 +116,11 @@ def process_docx(docx_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
         record["id"]: record["element"]
         for record in block_records
         if record["type"] == "paragraph"
+    }
+    table_by_id = {
+        record["id"]: record["element"]
+        for record in block_records
+        if record["type"] == "table"
     }
 
     logs.append(
@@ -116,10 +133,19 @@ def process_docx(docx_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
     )
 
     audit_items: list[dict[str, Any]] = []
+    for caption in captions:
+        if not caption.duplicate_paragraph_id:
+            continue
+        duplicate_paragraph = paragraph_by_id.get(caption.duplicate_paragraph_id)
+        if duplicate_paragraph is not None:
+            _clear_paragraph_text(duplicate_paragraph)
+
     for index, caption in enumerate(captions, start=1):
         max_bookmark_id += 1
-        if caption.paragraph_id:
+        if caption.source_kind == "paragraph" and caption.paragraph_id:
             paragraph = paragraph_by_id.get(caption.paragraph_id)
+        elif caption.source_kind == "table_first_row":
+            paragraph = _first_table_cell_paragraph(table_by_id.get(caption.table_id))
         else:
             paragraph = created_paragraphs.get(caption.id)
         if paragraph is None:
@@ -262,6 +288,18 @@ def create_sample_docx() -> bytes:
         <w:tc><w:p><w:r><w:t>2</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
+    <w:p>
+      <w:r><w:t>研究期间，重要方案偏离发生率相近（见表 3）。方案偏离的详细情况参见统计列表 16.2.2。</w:t></w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>表 14.1.1.3 重要方案偏离情况 － 意向治疗分析集(ITT)</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>重要方案偏离</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>107</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
     <w:sectPr>
       <w:pgSz w:w="11906" w:h="16838"/>
       <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
@@ -358,16 +396,46 @@ def _build_caption_candidates(blocks: list[dict[str, Any]]) -> list[CaptionCandi
             continue
         table_number += 1
         previous = _previous_non_empty_paragraph(blocks, index)
-        match = CAPTION_RE.match(previous["text"]) if previous else None
-        original_text = previous["text"] if match else None
-        original_number = match.group("number") if match else None
-        title = match.group("title") if match else "未命名表格"
-        paragraph_id = previous["id"] if match else None
+        paragraph_match = CAPTION_RE.match(previous["text"]) if previous else None
+        table_caption = _first_row_caption(record["element"])
+
+        # Prefer an external caption paragraph. If absent, use a table-internal
+        # title row, which is common in CSR source tables exported from systems.
+        if table_caption and paragraph_match:
+            original_text = table_caption["text"]
+            original_number = table_caption["number"]
+            title = table_caption["title"]
+            paragraph_id = None
+            duplicate_paragraph_id = previous["id"]
+            source_kind = "table_first_row"
+        elif paragraph_match:
+            original_text = previous["text"]
+            original_number = paragraph_match.group("number")
+            title = paragraph_match.group("title")
+            paragraph_id = previous["id"]
+            duplicate_paragraph_id = None
+            source_kind = "paragraph"
+        elif table_caption:
+            original_text = table_caption["text"]
+            original_number = table_caption["number"]
+            title = table_caption["title"]
+            paragraph_id = None
+            duplicate_paragraph_id = None
+            source_kind = "table_first_row"
+        else:
+            original_text = None
+            original_number = None
+            title = "未命名表格"
+            paragraph_id = None
+            duplicate_paragraph_id = None
+            source_kind = "missing"
         captions.append(
             CaptionCandidate(
                 id=f"cap_tbl_{table_number:03d}",
                 table_id=record["id"],
                 paragraph_id=paragraph_id,
+                duplicate_paragraph_id=duplicate_paragraph_id,
+                source_kind=source_kind,
                 body_index=record["body_index"],
                 table_index=table_number,
                 original_text=original_text,
@@ -383,12 +451,19 @@ def _build_caption_candidates(blocks: list[dict[str, Any]]) -> list[CaptionCandi
 def _detect_references(
     blocks: list[dict[str, Any]], captions: list[CaptionCandidate]
 ) -> list[dict[str, Any]]:
-    caption_paragraph_ids = {caption.paragraph_id for caption in captions if caption.paragraph_id}
+    caption_paragraph_ids = {
+        paragraph_id
+        for caption in captions
+        for paragraph_id in (caption.paragraph_id, caption.duplicate_paragraph_id)
+        if paragraph_id
+    }
     by_old_number = {
         caption.original_number: caption
         for caption in captions
         if caption.original_number is not None
     }
+    by_new_number = {caption.new_number: caption for caption in captions}
+    table_positions = {caption.id: caption.body_index for caption in captions}
     references: list[dict[str, Any]] = []
     ref_index = 0
     for record in blocks:
@@ -397,9 +472,15 @@ def _detect_references(
         for match in REFERENCE_RE.finditer(record["text"]):
             ref_index += 1
             number = match.group("number")
-            target = by_old_number.get(number)
+            target, confidence, reason = _match_reference_target(
+                number=number,
+                paragraph_body_index=record["body_index"],
+                old_number_index=by_old_number,
+                new_number_index=by_new_number,
+                captions=captions,
+                table_positions=table_positions,
+            )
             prefix = f"{match.group('prefix')}{match.group('space')}"
-            confidence = "high" if target is not None else "low"
             references.append(
                 {
                     "id": f"ref_{ref_index:03d}",
@@ -413,9 +494,7 @@ def _detect_references(
                     "new_number": target.new_number if target else None,
                     "proposed_text": f"{prefix}{target.new_number}" if target else None,
                     "confidence": confidence,
-                    "reason": "原始编号唯一匹配到表格题注"
-                    if target
-                    else "未找到具有相同原始编号的表格题注",
+                    "reason": reason,
                 }
             )
     return references
@@ -434,6 +513,9 @@ def _build_plan(
             "high_confidence_references": sum(
                 1 for reference in references if reference["confidence"] == "high"
             ),
+            "medium_confidence_references": sum(
+                1 for reference in references if reference["confidence"] == "medium"
+            ),
             "low_confidence_references": sum(
                 1 for reference in references if reference["confidence"] == "low"
             ),
@@ -443,20 +525,70 @@ def _build_plan(
                 "id": caption.id,
                 "table_id": caption.table_id,
                 "source_paragraph_id": caption.paragraph_id,
+                "duplicate_paragraph_id": caption.duplicate_paragraph_id,
+                "source_kind": caption.source_kind,
                 "original_text": caption.original_text,
                 "original_number": caption.original_number,
                 "new_label": caption.new_label,
                 "title": caption.title,
                 "display_text": caption.display_text,
                 "bookmark": caption.bookmark_name,
-                "action": "ConvertTextToCaption"
-                if caption.paragraph_id
-                else "InsertCaption",
+                "action": _caption_action_name(caption),
             }
             for caption in captions
         ],
         "reference_actions": references,
     }
+
+
+def _caption_action_name(caption: CaptionCandidate) -> str:
+    if caption.source_kind == "paragraph":
+        return "ConvertTextToCaption"
+    if caption.source_kind == "table_first_row":
+        return "ConvertTableRowTitleToCaption"
+    return "InsertCaption"
+
+
+def _match_reference_target(
+    *,
+    number: str,
+    paragraph_body_index: int,
+    old_number_index: dict[str, CaptionCandidate],
+    new_number_index: dict[str, CaptionCandidate],
+    captions: list[CaptionCandidate],
+    table_positions: dict[str, int],
+) -> tuple[CaptionCandidate | None, str, str]:
+    old_number_target = old_number_index.get(number)
+    if old_number_target:
+        return old_number_target, "high", "原始统计表编号唯一匹配到表格题注"
+
+    new_number_target = new_number_index.get(number)
+    if new_number_target:
+        return new_number_target, "high", "正文编号匹配题注重排后的新编号"
+
+    nearest_caption = _nearest_caption_after(paragraph_body_index, captions, table_positions)
+    if nearest_caption:
+        return nearest_caption, "medium", "未命中编号，按同章节/段落后的最近表格推荐匹配"
+
+    return None, "low", "未找到具有相同编号或邻近位置的表格题注"
+
+
+def _nearest_caption_after(
+    paragraph_body_index: int,
+    captions: list[CaptionCandidate],
+    table_positions: dict[str, int],
+) -> CaptionCandidate | None:
+    candidates = [
+        caption
+        for caption in captions
+        if table_positions.get(caption.id, -1) > paragraph_body_index
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda caption: table_positions.get(caption.id, 10**9))
+    nearest = candidates[0]
+    distance = table_positions.get(nearest.id, 10**9) - paragraph_body_index
+    return nearest if distance <= 8 else None
 
 
 def _previous_non_empty_paragraph(
@@ -486,6 +618,48 @@ def _table_text(table: ET.Element) -> str:
     return " ".join(texts)
 
 
+def _first_row_caption(table: ET.Element | None) -> dict[str, str] | None:
+    if table is None:
+        return None
+    first_row = table.find("w:tr", NS)
+    if first_row is None:
+        return None
+    text = _row_text(first_row).strip()
+    match = CAPTION_RE.match(text)
+    if not match:
+        return None
+    return {
+        "text": text,
+        "number": match.group("number"),
+        "title": match.group("title"),
+    }
+
+
+def _row_text(row: ET.Element) -> str:
+    texts = []
+    for text_node in row.findall(".//w:t", NS):
+        if text_node.text:
+            texts.append(text_node.text)
+    return "".join(texts)
+
+
+def _first_table_cell_paragraph(table: ET.Element | None) -> ET.Element | None:
+    if table is None:
+        return None
+    first_row = table.find("w:tr", NS)
+    if first_row is None:
+        return None
+    first_cell = first_row.find("w:tc", NS)
+    if first_cell is None:
+        return None
+    paragraph = first_cell.find("w:p", NS)
+    if paragraph is not None:
+        return paragraph
+    paragraph = _new_paragraph()
+    first_cell.insert(0, paragraph)
+    return paragraph
+
+
 def _new_paragraph() -> ET.Element:
     return ET.Element(f"{W}p")
 
@@ -504,6 +678,14 @@ def _set_caption_paragraph(
     paragraph.append(_field(" SEQ 表 \\* ARABIC ", caption.new_number))
     paragraph.append(_run(f" {caption.title}"))
     paragraph.append(_bookmark_end(bookmark_id))
+
+
+def _clear_paragraph_text(paragraph: ET.Element) -> None:
+    ppr = paragraph.find("w:pPr", NS)
+    saved_ppr = copy.deepcopy(ppr) if ppr is not None else None
+    paragraph.clear()
+    if saved_ppr is not None:
+        paragraph.append(saved_ppr)
 
 
 def _replace_reference_in_paragraph(

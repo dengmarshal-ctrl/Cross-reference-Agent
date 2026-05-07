@@ -299,6 +299,10 @@ button.ghost {
   color: var(--green);
 }
 
+.confidence-medium {
+  color: var(--orange);
+}
+
 .confidence-low {
   color: var(--red);
 }
