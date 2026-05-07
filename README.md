@@ -13,6 +13,26 @@
 
 ## 快速启动
 
+### 方式一：本地一键启动并自动打开浏览器
+
+```bash
+python3 run_demo.py
+```
+
+如果是 Windows，也可以尝试：
+
+```powershell
+py run_demo.py
+```
+
+该方式会在你的本地电脑启动服务，并自动打开：
+
+```text
+http://127.0.0.1:8000
+```
+
+### 方式二：手动启动服务
+
 ```bash
 python3 -m app.server
 ```
