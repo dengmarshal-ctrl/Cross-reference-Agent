@@ -57,7 +57,7 @@ class OoxmlProcessorTest(unittest.TestCase):
 
         self.assertEqual(plan["caption_actions"][0]["source_kind"], "table_first_row")
         self.assertEqual(plan["reference_actions"][0]["confidence"], "high")
-        self.assertEqual(plan["reference_actions"][0]["reason"], "正文编号匹配题注重排后的新编号")
+        self.assertIn("短编号引用", plan["reference_actions"][0]["reason"])
         self.assertIn('w:instr=" SEQ 表 \\* ARABIC "', document_xml)
         self.assertIn('w:instr=" REF _CSR_Table_001 \\h "', document_xml)
         self.assertNotIn("表 14.1.1.3 重要方案偏离情况", document_xml)
@@ -117,11 +117,39 @@ class OoxmlProcessorTest(unittest.TestCase):
         )
         self.assertEqual(plan["reference_actions"][1]["target_title"], "重要方案偏离情况 － 意向治疗分析集(ITT)")
         self.assertEqual(plan["reference_actions"][2]["target_title"], "分析数据集分布")
-        self.assertIn("重复局部编号", plan["reference_actions"][1]["reason"])
+        self.assertIn("短编号引用", plan["reference_actions"][1]["reason"])
         self.assertEqual(audit["summary"]["cross_references_created"], 3)
         self.assertIn('w:instr=" REF _CSR_Table_002 \\h "', document_xml)
         self.assertIn('w:instr=" REF _CSR_Table_003 \\h "', document_xml)
         self.assertNotIn(">4<", document_xml)
+
+    def test_short_reference_prefers_nearby_full_numbered_caption(self) -> None:
+        sample = self._docx(
+            """
+    <w:p><w:r><w:t>1.1 已有局部表</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表1 非当前章节表格</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>旧章节数据</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>1.4.1 人口统计学和基线疾病特征</w:t></w:r></w:p>
+    <w:p><w:r><w:t>基于意向治疗分析集（ITT），人口统计学和基线疾病特征见表1。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>表 14.1.2.1 人口学和基线特征总结 意向治疗分析集(ITT)</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>年龄（岁）</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+            """
+        )
+
+        plan = analyze_docx(sample)
+        output, audit = process_docx(sample)
+        document_xml = self._document_xml(output)
+
+        self.assertEqual(plan["reference_actions"][0]["target_title"], "人口学和基线特征总结 意向治疗分析集(ITT)")
+        self.assertEqual(plan["reference_actions"][0]["proposed_text"], "表2")
+        self.assertIn("短编号引用", plan["reference_actions"][0]["reason"])
+        self.assertEqual(audit["summary"]["cross_references_created"], 1)
+        self.assertIn('w:instr=" REF _CSR_Table_002 \\h "', document_xml)
+        self.assertNotIn('w:instr=" REF _CSR_Table_001 \\h "', document_xml)
 
     def _document_xml(self, docx_bytes: bytes) -> str:
         with zipfile.ZipFile(io.BytesIO(docx_bytes), "r") as docx:

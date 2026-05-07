@@ -554,6 +554,11 @@ def _match_reference_target(
     captions: list[CaptionCandidate],
     table_positions: dict[str, int],
 ) -> tuple[CaptionCandidate | None, str, str]:
+    if _is_simple_number(number):
+        nearest_caption = _nearest_caption_after(paragraph_body_index, captions, table_positions)
+        if nearest_caption and _caption_matches_short_number(nearest_caption, number):
+            return nearest_caption, "high", "短编号引用按当前段落后的最近相关表格匹配"
+
     old_number_targets = old_number_index.get(number, [])
     if old_number_targets:
         target = _best_context_candidate(paragraph_body_index, old_number_targets, table_positions)
@@ -576,6 +581,19 @@ def _match_reference_target(
         return nearest_caption, "medium", "未命中编号，按同章节/段落后的最近表格推荐匹配"
 
     return None, "low", "未找到具有相同编号或邻近位置的表格题注"
+
+
+def _is_simple_number(number: str) -> bool:
+    return bool(re.fullmatch(r"\d+", number))
+
+
+def _caption_matches_short_number(caption: CaptionCandidate, number: str) -> bool:
+    if caption.new_number == number or caption.original_number == number:
+        return True
+    if not caption.original_number:
+        return False
+    parts = re.split(r"[.\-]", caption.original_number)
+    return bool(parts and parts[-1] == number)
 
 
 def _index_captions_by_number(
